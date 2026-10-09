@@ -27,7 +27,16 @@ def key_green_to_alpha(rgb):
     ring2 = _neighbors(core | ring1) & ~core & ~ring1
     alpha[ring1] = 110
     alpha[ring2] = 190
-    return np.dstack([rgb3, alpha])
+    out = np.dstack([rgb3, alpha])
+    # despill: buang dominasi hijau di ring feather biar tanpa fringe
+    ring = ring1 | ring2
+    if ring.any():
+        rr = out[..., 0].astype(np.int16)
+        gg = out[..., 1].astype(np.int16)
+        bb = out[..., 2].astype(np.int16)
+        cap = np.minimum(gg, np.maximum(rr, bb) + 12)
+        out[..., 1][ring] = cap[ring].astype(np.uint8)
+    return out
 
 
 def _green_mask(rgb):
@@ -92,7 +101,20 @@ def detect_slots(mask, down=4, min_frac=0.01, close_px=9):
         rects.append({"x": int(mx0 + cols[0]), "y": int(my0 + rows[0]),
                       "w": int(cols[-1] - cols[0] + 1),
                       "h": int(rows[-1] - rows[0] + 1)})
-    rects.sort(key=lambda r: (r["y"], r["x"]))
+    # urut baris: cluster overlap vertikal, x menaik dalam baris
+    rows = []
+    for r in sorted(rects, key=lambda r: r["y"]):
+        placed = False
+        for row in rows:
+            ref = row[0]
+            ov = min(r["y"] + r["h"], ref["y"] + ref["h"]) - max(r["y"], ref["y"])
+            if ov >= 0.5 * min(r["h"], ref["h"]):
+                row.append(r)
+                placed = True
+                break
+        if not placed:
+            rows.append([r])
+    rects = [r for row in rows for r in sorted(row, key=lambda r: r["x"])]
     return rects
 
 
@@ -162,7 +184,9 @@ def _clean_name(stem, fallback):
     import re
     base = re.sub(r"_\d{8}_\d{6}(?:_\d+)?$", "", stem)
     m = re.fullmatch(r"(\d+)", base)
-    if base == "" or m:
+    if m:
+        return re.sub(r"\d+", m.group(1), fallback, count=1)
+    if base == "":
         return fallback
     base = re.sub(r"\s+", " ", base.replace("_", " ")).strip()
     return base.title() if base.isupper() else base
@@ -194,7 +218,7 @@ def run_batch():
             info = analyze(str(p), category)
             proof_image(str(p), category)
             name = _clean_name(p.stem, f"{title} {n}")
-            entry = {"id": _slug(f"{category} {name}"),
+            entry = {"id": _slug(name),
                      "name": name, "src": f"./{p.as_posix()}",
                      "w": info["w"], "h": info["h"],
                      "category": category, "printSize": print_size,
@@ -215,7 +239,7 @@ def _test_detect():
     import numpy as np
     m = np.zeros((200, 240), bool)
     m[20:60, 20:100] = True
-    m[20:60, 140:220] = True
+    m[18:58, 140:220] = True  # kanan 2px lebih tinggi: baris sama
     m[100:140, 20:100] = True
     m[100:140, 140:220] = True
     m[180:182, 180:185] = True  # noise, harus dibuang
@@ -223,7 +247,7 @@ def _test_detect():
     assert len(rects) == 4, rects
     assert (rects[0]["x"], rects[0]["y"],
             rects[0]["w"], rects[0]["h"]) == (20, 20, 80, 40), rects[0]
-    assert (rects[1]["x"], rects[1]["y"]) == (140, 20), rects[1]
+    assert (rects[1]["x"], rects[1]["y"]) == (140, 18), rects[1]
     assert (rects[2]["x"], rects[2]["y"]) == (20, 100), rects[2]
     assert (rects[3]["x"], rects[3]["y"]) == (140, 100), rects[3]
     assert group_strip(rects) == [[0, 1], [2, 3]], group_strip(rects)
@@ -248,6 +272,14 @@ def _selfcheck():
     assert a[1, 4] == 190, f"ring2 parsial: {a[1,4]}"
     assert a[0, 4] == 255, "krem jauh tetap opak"
     assert a[0, 8] == 255, "putih jauh tetap opak"
+    # despill: ring hijau di samping inti harus dibuang hijaunya
+    img2 = np.full((7, 7, 3), [250, 250, 250], dtype=np.uint8)
+    img2[2:5, 2:5] = [15, 255, 0]
+    out2 = key_green_to_alpha(img2)
+    edge = out2[1, 3]
+    assert 0 < edge[3] < 255, f"ring harus parsial: {edge}"
+    assert int(edge[1]) <= max(int(edge[0]), int(edge[2])) + 12, \
+        f"despill gagal: {edge}"
     _test_detect()
     print("selfcheck OK")
 
