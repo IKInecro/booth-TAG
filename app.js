@@ -40,6 +40,21 @@ let stream=null
 let frames=[]
 let selected=null
 let photosCanvases=[]
+let activeCategory='all'
+const CATS=[['all','Semua'],['strip-koran','Strip Koran (A4)'],['strip-kecil','Strip Kecil (100×148)']]
+function groupCount(f){
+  return f.captureGroups ? f.captureGroups.length : f.slots.length
+}
+function groupRects(f,k){
+  if(!f.captureGroups) return [f.slots[k]]
+  return f.captureGroups[k].map(i=>f.slots[i])
+}
+function groupOfSlot(f){
+  if(!f.captureGroups) return f.slots.map((_,i)=>i)
+  const g=new Array(f.slots.length)
+  f.captureGroups.forEach((grp,k)=>grp.forEach(i=>{g[i]=k}))
+  return g
+}
 
 const video=$('#video')
 const videoWrap=$('#video-wrap')
@@ -96,9 +111,25 @@ $('#btn-back-to-gate').onclick=()=> show('gate')
 async function loadFrames(){
   const res = await fetch('./frames.json')
   frames = await res.json()
+  renderChips()
+  renderFrameGrid()
+}
+function renderChips(){
+  const wrap=$('#category-chips')
+  if(!wrap) return
+  wrap.innerHTML=''
+  CATS.forEach(([val,label])=>{
+    const b=document.createElement('button')
+    b.className='neo-btn chip'+(val===activeCategory?' active':'')
+    b.textContent=label
+    b.onclick=()=>{ activeCategory=val; renderChips(); renderFrameGrid() }
+    wrap.appendChild(b)
+  })
+}
+function renderFrameGrid(){
   const grid=$('#frame-grid')
   grid.innerHTML=''
-  frames.forEach(f=>{
+  frames.filter(f=>activeCategory==='all'||f.category===activeCategory).forEach(f=>{
     const card=document.createElement('button')
     card.className='frame-card neo-card'
     card.style.display='flex'; card.style.flexDirection='column'; card.style.alignItems='center'
@@ -116,7 +147,8 @@ async function loadFrames(){
     imgWrap.appendChild(img)
     const meta=document.createElement('div')
     meta.style.marginTop='10px'; meta.style.width='100%'; meta.style.textAlign='center'
-    meta.innerHTML=`<b>${f.name}</b><br><span>${f.slots.length} foto</span>`
+    const size = f.printSize ? ` · ${f.printSize}` : ''
+    meta.innerHTML=`<b>${f.name}</b><br><span>${groupCount(f)} foto${size}</span><br><span class="size-badge">${f.category==='strip-koran'?'STRIP KORAN':f.category==='strip-kecil'?'STRIP KECIL':'FRAME'}</span>`
     card.appendChild(imgWrap); card.appendChild(meta)
     card.onclick=()=> selectFrame(f)
     grid.appendChild(card)
@@ -143,7 +175,7 @@ function selectFrame(f){
   preview.style.margin = '0 auto'
   preview.style.display = 'grid'
   preview.style.placeItems = 'center'
-  const ratio = f.slots[0] ? (f.slots[0].w / f.slots[0].h) : 3/4
+  const ratio = groupRects(f,0)[0] ? (groupRects(f,0)[0].w / groupRects(f,0)[0].h) : 3/4
   videoWrap.style.aspectRatio = String(ratio)
   // cegah video-wrap nabrak preview di new2 diagonal
   videoWrap.style.maxWidth = '100%'
@@ -156,6 +188,8 @@ function buildSlots(){
   slotLayer.innerHTML=''
   if(!selected) return
   const W=selected.w, H=selected.h
+  const gmap=groupOfSlot(selected)
+  const cur=photosCanvases.length
   selected.slots.forEach((s, i)=>{
     const el=document.createElement('div')
     el.className='slot empty'
@@ -164,7 +198,7 @@ function buildSlots(){
     el.style.top = (s.y / H * 100) + '%'
     el.style.width = (s.w / W * 100) + '%'
     el.style.height = (s.h / H * 100) + '%'
-    const canvas = photosCanvases[i]
+    const canvas = photosCanvases[gmap[i]]
     if(canvas){
       el.classList.remove('empty')
       el.classList.add('filled')
@@ -172,10 +206,10 @@ function buildSlots(){
       img.src = canvas.toDataURL('image/jpeg',0.85)
       el.appendChild(img)
     }else{
-      const isActive = i===photosCanvases.length
+      const isActive = gmap[i]===cur
       if(isActive) el.classList.add('active')
       const span=document.createElement('span')
-      span.textContent = isActive ? 'Slot '+(i+1)+' siap' : 'Slot '+(i+1)
+      span.textContent = isActive ? 'Slot '+(gmap[i]+1)+' siap' : 'Slot '+(gmap[i]+1)
       el.appendChild(span)
     }
     slotLayer.appendChild(el)
@@ -191,7 +225,7 @@ $('#btn-change-frame2').onclick=()=>{
 }
 function renderProgress(){
   if(!selected) return
-  const n=selected.slots.length
+  const n=groupCount(selected)
   const cur=photosCanvases.length
   progressEl.innerHTML=''
   for(let i=0;i<n;i++){
@@ -205,6 +239,10 @@ function renderProgress(){
   captureText.textContent = cur>=n ? 'Lihat Hasil' : 'Ambil Foto'
   btnCapture.disabled = false
   $('#btn-retake').hidden = cur===0
+  if(cur<n){
+    const r=groupRects(selected,cur)[0]
+    if(r) videoWrap.style.aspectRatio = String(r.w / r.h)
+  }
   buildSlots()
 }
 
@@ -252,7 +290,7 @@ function doFlash(){
 }
 btnCapture.onclick = async ()=>{
   if(!selected) return
-  if(photosCanvases.length>=selected.slots.length){
+  if(photosCanvases.length>=groupCount(selected)){
     play(sndAll);await composeAndShow()
     return
   }
@@ -264,12 +302,12 @@ btnCapture.onclick = async ()=>{
   photosCanvases.push(cap)
   renderProgress()
   btnCapture.disabled=false
-  if(photosCanvases.length>=selected.slots.length){
+  if(photosCanvases.length>=groupCount(selected)){
     await sleep(420)
     await composeAndShow()
   }else if(autoShoot){
     await sleep(900)
-    if(autoShoot && photosCanvases.length < selected.slots.length) btnCapture.click()
+    if(autoShoot && photosCanvases.length < groupCount(selected)) btnCapture.click()
   }
 }
 $('#btn-retake').onclick=()=>{
@@ -283,10 +321,11 @@ async function composeAndShow(){
   const ctx=finalCanvas.getContext('2d')
   ctx.fillStyle='#fff'
   ctx.fillRect(0,0,W,H)
-  for(let i=0;i<photosCanvases.length;i++){
-    const slot=selected.slots[i]
-    if(!slot) break
-    drawCover(ctx, photosCanvases[i], slot.x, slot.y, slot.w, slot.h)
+  for(let k=0;k<photosCanvases.length;k++){
+    for(const slot of groupRects(selected,k)){
+      if(!slot) break
+      drawCover(ctx, photosCanvases[k], slot.x, slot.y, slot.w, slot.h)
+    }
   }
   const frameImg = await loadImage(selected.src)
   ctx.drawImage(frameImg,0,0,W,H)
