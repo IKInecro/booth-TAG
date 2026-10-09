@@ -97,7 +97,9 @@ def detect_slots(mask, down=4, min_frac=0.01, close_px=9):
 
 
 def group_strip(rects):
-    """Rects urut baris -> grup pasangan [[i,j],...] (kiri+kanan sebaris)."""
+    """Rects urut baris -> grup pasangan [[kiri,kanan],...] (sebaris)."""
+    def _ov(a, b):
+        return min(a["y"] + a["h"], b["y"] + b["h"]) - max(a["y"], b["y"])
     order = sorted(range(len(rects)),
                    key=lambda i: (rects[i]["y"], rects[i]["x"]))
     used = [False] * len(rects)
@@ -106,21 +108,21 @@ def group_strip(rects):
         if used[i]:
             continue
         a = rects[i]
-        partner = None
+        best, best_ov = None, 0
         for j in order:
-            if used[j] or j == i or rects[j]["x"] <= a["x"]:
+            if used[j] or j == i:
                 continue
             b = rects[j]
-            ov = min(a["y"] + a["h"], b["y"] + b["h"]) - max(a["y"], b["y"])
-            if ov >= 0.5 * min(a["h"], b["h"]):
-                partner = j
-                break
+            ov = _ov(a, b)
+            if (ov >= 0.5 * min(a["h"], b["h"]) and ov > best_ov):
+                best, best_ov = j, ov
         used[i] = True
-        if partner is None:
+        if best is None:
             groups.append([i])
         else:
-            used[partner] = True
-            groups.append([i, partner])
+            used[best] = True
+            groups.append(sorted([i, best],
+                                 key=lambda k: rects[k]["x"]))
     return groups
 
 
@@ -156,6 +158,59 @@ def proof_image(path, category):
     return out
 
 
+def _clean_name(stem, fallback):
+    import re
+    base = re.sub(r"_\d{8}_\d{6}(?:_\d+)?$", "", stem)
+    m = re.fullmatch(r"(\d+)", base)
+    if base == "" or m:
+        return fallback
+    base = re.sub(r"\s+", " ", base.replace("_", " ")).strip()
+    return base.title() if base.isupper() else base
+
+
+def _slug(text):
+    import re
+    return re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", text.lower())).strip("-")
+
+
+def run_batch():
+    import json
+    import numpy as np
+    from pathlib import Path
+    from PIL import Image
+    jobs = [("frames/DESIGN KORAN", "strip-koran", "A4", "Strip Koran"),
+            ("frames/DESIGN STRIP BIASA", "strip-kecil", "100x148mm",
+             "Strip Kecil")]
+    entries = []
+    for folder, category, print_size, title in jobs:
+        files = sorted(Path(folder).glob("*.png"))
+        n = 0
+        for p in files:
+            n += 1
+            im = Image.open(p).convert("RGB")
+            arr = np.asarray(im)
+            keyed = Image.fromarray(key_green_to_alpha(arr))
+            keyed.save(p)  # timpa: RGB -> RGBA transparan
+            info = analyze(str(p), category)
+            proof_image(str(p), category)
+            name = _clean_name(p.stem, f"{title} {n}")
+            entry = {"id": _slug(f"{category} {name}"),
+                     "name": name, "src": f"./{p.as_posix()}",
+                     "w": info["w"], "h": info["h"],
+                     "category": category, "printSize": print_size,
+                     "slots": info["rects"]}
+            if category == "strip-kecil":
+                entry["captureGroups"] = info["groups"]
+            entries.append(entry)
+            print(f"json: {entry['id']} slot={len(info['rects'])} "
+                  f"grup={info['groups']}")
+    with open("frames.json", "w") as f:
+        json.dump(entries, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    print(f"frames.json: {len(entries)} entri")
+    return entries
+
+
 def _test_detect():
     import numpy as np
     m = np.zeros((200, 240), bool)
@@ -172,6 +227,10 @@ def _test_detect():
     assert (rects[2]["x"], rects[2]["y"]) == (20, 100), rects[2]
     assert (rects[3]["x"], rects[3]["y"]) == (140, 100), rects[3]
     assert group_strip(rects) == [[0, 1], [2, 3]], group_strip(rects)
+    # regresi: kanan sedikit lebih tinggi -> tetap pasangan, kiri dulu
+    stagger = [{"x": 140, "y": 18, "w": 80, "h": 40},
+               {"x": 20, "y": 20, "w": 80, "h": 40}]
+    assert group_strip(stagger) == [[1, 0]], group_strip(stagger)
     print("detect OK")
 
 
@@ -196,6 +255,8 @@ def _selfcheck():
 if __name__ == "__main__":
     if "--selfcheck" in sys.argv:
         _selfcheck()
+    elif "--batch" in sys.argv:
+        run_batch()
     elif "--proof" in sys.argv:
         args = sys.argv[sys.argv.index("--proof") + 1:]
         cat = "auto"
